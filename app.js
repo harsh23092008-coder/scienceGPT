@@ -1,441 +1,238 @@
-const API_URL = "/api/chat"; // 👈 Bas yahi rahega. Key backend me hai.
-
+// ===== DOM ELEMENTS =====
 const DOM = {
-    chat: document.getElementById('chatContainer'),
-    input: document.getElementById('userInput'),
-    sendBtn: document.getElementById('sendBtn'),
-    newChat: document.getElementById('newChatBtn'),
-    level: document.getElementById('levelSelect'),
-    mode: document.getElementById('modeSelect'),
-    imageBtn: document.getElementById('imageBtn'),
-    imageInput: document.getElementById('imageInput'),
-    imagePreview: document.getElementById('imagePreview'),
-    voiceBtn: document.getElementById('voiceBtn'),
-    themeToggle: document.getElementById('themeToggle'),
-    ttsToggle: document.getElementById('ttsToggle'),
-    menuBtn: document.getElementById('menuBtn'),
-    sidebar: document.getElementById('sidebar'),
-    formulaBtn: document.getElementById('formulaBtn'),
-    pyqBtn: document.getElementById('pyqBtn'),
-    exportBtn: document.getElementById('exportBtn'),
-    statusText: document.getElementById('statusText'),
-    historyList: document.getElementById('historyList')
+  chat: document.getElementById('chat-box'),
+  userInput: document.getElementById('user-input'),
+  sendBtn: document.getElementById('send-btn'),
+  statusText: document.getElementById('status-text'),
+  newChatBtn: document.getElementById('new-chat-btn'),
+  themeToggle: document.getElementById('theme-toggle'),
+  exportBtn: document.getElementById('export-btn'),
+  clearBtn: document.getElementById('clear-btn')
 };
 
-let messages = [];
+// ===== GLOBAL STATE =====
+let conversationHistory = [
+  { role: 'system', content: 'You are ScienceGPT, a helpful AI tutor for Physics, Chemistry, Biology and Maths. Explain concepts clearly with examples. Use markdown for formulas: $E=mc^2$' }
+];
 let isLoading = false;
-let currentImage = null;
-let recognition = null;
-let ttsEnabled = false;
-let chatHistory = JSON.parse(localStorage.getItem('sciencegpt_history') || '[]');
+const STORAGE_KEY = 'sciencegpt_chat';
 
-initTheme();
-initVoice();
-loadHistory();
-DOM.input.focus();
-
-DOM.input.addEventListener('input', autoResize);
-DOM.input.addEventListener('keydown', handleKeydown);
-DOM.sendBtn.addEventListener('click', sendMessage);
-DOM.newChat.addEventListener('click', startNewChat);
-DOM.imageBtn.addEventListener('click', () => DOM.imageInput.click());
-DOM.imageInput.addEventListener('change', handleImageUpload);
-DOM.voiceBtn.addEventListener('click', toggleVoice);
-DOM.themeToggle.addEventListener('click', toggleTheme);
-DOM.ttsToggle.addEventListener('click', toggleTTS);
-DOM.menuBtn.addEventListener('click', () => DOM.sidebar.classList.toggle('open'));
-DOM.formulaBtn.addEventListener('click', generateFormulaSheet);
-DOM.pyqBtn.addEventListener('click', findPYQ);
-DOM.exportBtn.addEventListener('click', exportChat);
-
-function autoResize() {
-    this.style.height = 'auto';
-    this.style.height = Math.min(this.scrollHeight, 200) + 'px';
-}
-
-function handleKeydown(e) {
-    if (e.key === 'Enter' &&!e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-    }
-}
-
-function startNewChat() {
-    if (messages.length > 1) saveToHistory();
-    messages = [];
-    currentImage = null;
-    DOM.imagePreview.innerHTML = '';
-    DOM.imagePreview.classList.remove('active');
-    DOM.chat.innerHTML = `
-        <div class="message bot">
-            <div class="avatar">S</div>
-            <div class="content">
-                <p>Naya chat! Kya poochna hai?</p>
-                <p>Photo bhejo, voice se poocho, ya likh ke bhejo 👇</p>
-            </div>
-        </div>`;
-    DOM.sidebar.classList.remove('open');
-}
-
-function saveToHistory() {
-    if (messages.length < 2) return;
-    const firstUserMsg = messages.find(m => m.role === 'user');
-    let title = 'New Chat';
-    if (firstUserMsg) {
-        if (typeof firstUserMsg.content === 'string') {
-            title = firstUserMsg.content.substring(0, 30);
-        } else if (Array.isArray(firstUserMsg.content)) {
-            title = firstUserMsg.content.find(c => c.type === 'text')?.text?.substring(0, 30) || 'Image Chat';
-        }
-    }
-    chatHistory.unshift({
-        id: Date.now(),
-        title: title,
-        messages: [...messages],
-        timestamp: new Date().toISOString()
-    });
-    chatHistory = chatHistory.slice(0, 20);
-    localStorage.setItem('sciencegpt_history', JSON.stringify(chatHistory));
-    loadHistory();
-}
-
-function loadHistory() {
-    DOM.historyList.innerHTML = '';
-    chatHistory.forEach(chat => {
-        const item = document.createElement('div');
-        item.className = 'history-item';
-        item.textContent = chat.title;
-        item.onclick = () => loadChat(chat.id);
-        DOM.historyList.appendChild(item);
-    });
-}
-
-function loadChat(id) {
-    const chat = chatHistory.find(c => c.id === id);
-    if (!chat) return;
-    messages = [...chat.messages];
-    DOM.chat.innerHTML = '';
-    messages.forEach(msg => {
-        const isUser = msg.role === 'user';
-        let content = msg.content;
-        let image = null;
-        if (Array.isArray(content)) {
-            const textPart = content.find(c => c.type === 'text');
-            const imagePart = content.find(c => c.type === 'image_url');
-            content = textPart?.text || 'Image';
-            image = imagePart?.image_url?.url;
-        }
-        addMessage(content, isUser, image, false);
-    });
-    DOM.sidebar.classList.remove('open');
-}
-
-function getSystemPrompt() {
-    const level = DOM.level.value;
-    const mode = DOM.mode.value;
-
-    const levels = {
-        easy: "Class 9-10. Basic se samjhao, simple words. NCERT ke examples use karo.",
-        medium: "Class 11-12 NCERT level. Proper depth. Derivations bhi do.",
-        NEET: "NEET UG level. Tricks, shortcuts, PYQ pattern batao. Biology me diagrams explain karo. Time-saving tips do.",
-        JEE: "JEE Advanced. Rigorous proof, tough numerical, multiple concepts combine karo. Olympiad level tak le jao.",
-        olympiad: "International Olympiad level. Research level problems bhi solve karo. IMO, IPhO, IChO standard."
-    };
-
-    const modes = {
-        solve: "Step-by-step format: Given, Formula, Solution, Answer. Har step explain karo. Units likho.",
-        short: "2-3 line me direct answer. No bakwaas. Sirf final answer + 1 line reason.",
-        chat: "Dost ki tarah baat karo. Hasi-majak ok. Memes bhi use kar sakte ho. Par science me 100% accurate raho.",
-        mock: "Mock test mode. Pehle 10 questions poocho ek ek karke. User ke answer check karke score do with explanation."
-    };
-
-    return `You are ScienceGPT Pro - India's best Science AI. ${levels[level]} ${modes[mode]}
-
-    Critical Rules:
-    1. LaTeX use karo for maths: $$...$$ for block, $...$ for inline
-    2. Code dena ho toh \`\`\`python ya \`\`\`javascript use karo with copy button
-    3. Galat info kabhi mat do. Agar nahi pata toh bolo "Nahi pata bhai"
-    4. Image mile toh uska complete analysis karo - text extract karo, solve karo
-    5. Hindi me baat karo, technical terms English me ok. Hinglish best hai
-    6. NEET/JEE me tricks batao - Vedic math, shortcuts, elimination method
-    7. Diagrams explain karo words me: "Imagine ek triangle ABC..."
-    8. Never say "As an AI". Tum ScienceGPT Pro ho, ek dost ho`;
-}
-
-function renderMarkdown(text) {
-    let html = marked.parse(text);
-    html = html.replace(/\$\$([\s\S]*?)\$\$/g, (match, formula) => {
-        try {
-            return katex.renderToString(formula, { throwOnError: false, displayMode: true });
-        } catch (e) {
-            return `<div class="katex-error">${match}</div>`;
-        }
-    });
-    html = html.replace(/\$([^\$]+?)\$/g, (match, formula) => {
-        try {
-            return katex.renderToString(formula, { throwOnError: false });
-        } catch (e) {
-            return match;
-        }
-    });
-    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-        return `<pre><button class="copy-code" onclick="copyCode(this)">Copy</button><code class="language-${lang || 'text'}">${escapeHtml(code.trim())}</code></pre>`;
-    });
-    return html;
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-window.copyCode = function(btn) {
-    const code = btn.nextElementSibling.textContent;
-    navigator.clipboard.writeText(code);
-    btn.textContent = 'Copied!';
-    btn.style.background = 'var(--success)';
-    setTimeout(() => {
-        btn.textContent = 'Copy';
-        btn.style.background = '';
-    }, 2000);
-}
-
-function addMessage(content, isUser, image = null, saveToArray = true) {
-    const msgDiv = document.createElement('div');
-    msgDiv.className = `message ${isUser? 'user' : 'bot'}`;
-    let html = `<div class="avatar">${isUser? 'U' : 'S'}</div><div class="content">`;
-    if (image) html += `<img src="${image}" class="message-image" alt="Uploaded">`;
-    html += isUser? escapeHtml(content) : renderMarkdown(content);
-    html += `</div>`;
-    msgDiv.innerHTML = html;
-    DOM.chat.appendChild(msgDiv);
-    DOM.chat.scrollTop = DOM.chat.scrollHeight;
-
-    if (!isUser && ttsEnabled && saveToArray) speakText(content);
-}
-
-function handleImageUpload(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 10 * 1024 * 1024) {
-        alert('Image 10MB se choti honi chahiye');
-        return;
-    }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        currentImage = e.target.result;
-        DOM.imagePreview.innerHTML = `<img src="${currentImage}" alt="Preview"><button onclick="clearImage()">✕</button>`;
-        DOM.imagePreview.classList.add('active');
-    };
-    reader.readAsDataURL(file);
-}
-
-window.clearImage = function() {
-    currentImage = null;
-    DOM.imageInput.value = '';
-    DOM.imagePreview.innerHTML = '';
-    DOM.imagePreview.classList.remove('active');
-}
-
-async function sendMessage() {
-    const text = DOM.input.value.trim();
-    if ((!text &&!currentImage) || isLoading) return;
-
-    isLoading = true;
-    DOM.sendBtn.disabled = true;
-    DOM.statusText.textContent = "Thinking...";
-
-    const displayText = text || "Image ka solution do";
-    addMessage(displayText, true, currentImage);
-    DOM.input.value = '';
-    DOM.input.style.height = 'auto';
-
-    const userMsg = { role: "user", content: text || "Solve this image" };
-    if (currentImage) {
-        userMsg.content = [
-            { type: "text", text: text || "Solve this image step by step with explanation" },
-            { type: "image_url", image_url: { url: currentImage } }
-        ];
-    }
-    messages.push(userMsg);
-
-    const loadingMsg = document.createElement('div');
-    loadingMsg.className = 'message bot';
-    loadingMsg.innerHTML = `<div class="avatar">S</div><div class="content"><p>Socha raha hu... 🧠</p></div>`;
-    DOM.chat.appendChild(loadingMsg);
-
-    try {
-        const res = await fetch(API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: currentImage? "llama-3.2-90b-vision-preview" : "llama-3.3-70b-versatile",
-                messages: [{ role: "system", content: getSystemPrompt() },...messages.slice(-10)],
-                temperature: 0.3,
-                max_tokens: 2000
-            })
-        });
-
-        if (!res.ok) {
-            const errData = await res.json();
-            throw new Error(errData.error?.message || `HTTP ${res.status}`);
-        }
-
-        const data = await res.json();
-        if (!data.choices ||!data.choices[0]) {
-            throw new Error('Invalid response from API');
-        }
-
-        const reply = data.choices[0].message.content;
-        messages.push({ role: "assistant", content: reply });
-        DOM.chat.removeChild(loadingMsg);
-        addMessage(reply, false);
-        clearImage();
-
-    } catch (err) {
-        DOM.chat.removeChild(loadingMsg);
-        let errorMsg = `Error: ${err.message}`;
-        if (err.message.includes('Failed to fetch')) {
-            errorMsg += '\n\nBackend chal raha hai? /api/chat check karo';
-        }
-        addMessage(errorMsg, false);
-    }
-
-    isLoading = false;
-    DOM.sendBtn.disabled = false;
-    DOM.statusText.textContent = "Physics | Chemistry | Biology | Maths | Anything";
-    DOM.input.focus();
-}
-
-function initVoice() {
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.lang = 'hi-IN';
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.onresult = (e) => {
-            DOM.input.value = e.results[0][0].transcript;
-            DOM.voiceBtn.classList.remove('recording');
-            autoResize.call(DOM.input);
-        };
-        recognition.onerror = (e) => {
-            console.error('Voice error:', e);
-            DOM.voiceBtn.classList.remove('recording');
-        };
-        recognition.onend = () => {
-            DOM.voiceBtn.classList.remove('recording');
-        };
-    }
-}
-
-function toggleVoice() {
-    if (!recognition) {
-        alert("Voice support nahi hai browser me. Chrome use karo");
-        return;
-    }
-    if (DOM.voiceBtn.classList.contains('recording')) {
-        recognition.stop();
-        DOM.voiceBtn.classList.remove('recording');
-    } else {
-        try {
-            recognition.start();
-            DOM.voiceBtn.classList.add('recording');
-        } catch (e) {
-            console.error('Voice start error:', e);
-        }
-    }
-}
-
-function toggleTTS() {
-    ttsEnabled =!ttsEnabled;
-    DOM.ttsToggle.textContent = ttsEnabled? '🔊 On' : '🔊 Off';
-    if (!ttsEnabled) {
-        speechSynthesis.cancel();
-    }
-}
-
-function speakText(text) {
-    if (!ttsEnabled) return;
-    speechSynthesis.cancel();
-    const clean = text.replace(/\$\$[\s\S]*?\$\$/g, '')
-                    .replace(/\$[^\$]+?\$/g, '')
-                    .replace(/```[\s\S]*?```/g, '')
-                    .replace(/[*_#]/g, '');
-    const utterance = new SpeechSynthesisUtterance(clean);
-    utterance.lang = 'hi-IN';
-    utterance.rate = 1.1;
-    utterance.pitch = 1;
-    speechSynthesis.speak(utterance);
-}
-
+// ===== THEME HANDLER =====
 function initTheme() {
-    const theme = localStorage.getItem('sciencegpt_theme') || 'dark';
-    document.documentElement.setAttribute('data-theme', theme);
-    DOM.themeToggle.textContent = theme === 'dark'? '🌙' : '☀️';
+  const savedTheme = localStorage.getItem('theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  if (DOM.themeToggle) DOM.themeToggle.checked = savedTheme === 'light';
 }
 
 function toggleTheme() {
-    const current = document.documentElement.getAttribute('data-theme');
-    const next = current === 'dark'? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem('sciencegpt_theme', next);
-    DOM.themeToggle.textContent = next === 'dark'? '🌙' : '☀️';
+  const current = document.documentElement.getAttribute('data-theme');
+  const newTheme = current === 'dark'? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', newTheme);
+  localStorage.setItem('theme', newTheme);
 }
 
-async function generateFormulaSheet() {
-    const topic = prompt("Kis topic ki formula sheet? Ex:\n- Physics Mechanics\n- Organic Chemistry\n- Calculus\n- Thermodynamics");
-    if (!topic) return;
-    DOM.input.value = `${topic} ki complete formula sheet banao. Table format me with: Formula | Meaning | Units | Example. NEET/JEE level.`;
-    sendMessage();
+// ===== MARKDOWN + CODE PARSER =====
+function parseMarkdown(text) {
+  // Code blocks ```js ... ```
+  text = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+    const id = 'code-' + Math.random().toString(36).substr(2, 9);
+    return `<div class="code-block">
+      <div class="code-header">
+        <span>${lang || 'code'}</span>
+        <button class="copy-btn" onclick="copyCode('${id}')">Copy</button>
+      </div>
+      <pre><code id="${id}">${escapeHtml(code.trim())}</code></pre>
+    </div>`;
+  });
+
+  // Inline code `code`
+  text = text.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+  
+  // Bold **text**
+  text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  
+  // Italic *text*
+  text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  
+  // Math $formula$
+  text = text.replace(/\$(.*?)\$/g, '<span class="math">$1</span>');
+  
+  // Line breaks
+  text = text.replace(/\n/g, '<br>');
+  
+  return text;
 }
 
-async function findPYQ() {
-    const exam = prompt("Exam aur details batao:\nEx: NEET 2024 Physics\nEx: JEE Advanced 2023 Maths\nEx: CBSE 12th 2023 Chemistry");
-    if (!exam) return;
-    DOM.input.value = `${exam} ke pichle saal ke 10 most important questions with detailed solution do. Pattern bhi explain karo.`;
-    sendMessage();
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+window.copyCode = function(id) {
+  const codeEl = document.getElementById(id);
+  navigator.clipboard.writeText(codeEl.textContent);
+  event.target.textContent = 'Copied!';
+  setTimeout(() => event.target.textContent = 'Copy', 2000);
+}
+
+// ===== LOCALSTORAGE =====
+function saveToLocal() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(conversationHistory));
+}
+
+function loadFromLocal() {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    conversationHistory = JSON.parse(saved);
+    DOM.chat.innerHTML = '';
+    conversationHistory.forEach(msg => {
+      if (msg.role !== 'system') {
+        addMessage(msg.content, msg.role === 'user', false, false);
+      }
+    });
+  }
+}
+
+// ===== CORE FUNCTIONS =====
+function addMessage(text, isUser = false, isTyping = false, shouldSave = true) {
+  const msgDiv = document.createElement('div');
+  msgDiv.className = `message ${isUser? 'user' : 'bot'} ${isTyping? 'typing' : ''}`;
+
+  if (isTyping) {
+    msgDiv.innerHTML = `<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>`;
+  } else {
+    msgDiv.innerHTML = parseMarkdown(text);
+  }
+
+  DOM.chat.appendChild(msgDiv);
+  DOM.chat.scrollTop = DOM.chat.scrollHeight;
+  
+  if (shouldSave &&!isTyping) saveToLocal();
+  return msgDiv;
+}
+
+async function sendMessage() {
+  const userText = DOM.userInput.value.trim();
+  if (!userText || isLoading) return;
+
+  // UI Lock
+  isLoading = true;
+  DOM.sendBtn.disabled = true;
+  DOM.statusText.textContent = "ScienceGPT is thinking...";
+
+  // User ka message dikhao
+  addMessage(userText, true);
+  DOM.userInput.value = '';
+
+  // Typing indicator banao
+  const typingDiv = addMessage("Typing...", false, true);
+
+  try {
+    // History me user message add karo
+    conversationHistory.push({ role: 'user', content: userText });
+
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.1-8b-instant',
+        messages: conversationHistory,
+        temperature: 0.3,
+        max_tokens: 2000
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'API Error');
+    }
+
+    const reply = data.reply || data.choices[0].message.content;
+
+    // FIX: Safe remove - crash nahi karega
+    typingDiv?.remove();
+
+    // AI ka reply dikhao
+    addMessage(reply, false);
+
+    // History me AI reply add karo
+    conversationHistory.push({ role: 'assistant', content: reply });
+    saveToLocal();
+
+  } catch (err) {
+    typingDiv?.remove();
+    let errorMsg = `Error: ${err.message}`;
+    if (err.message.includes('Failed to fetch')) {
+      errorMsg += '\n\nBackend check karo: /api/chat';
+    }
+    addMessage(errorMsg, false);
+  } finally {
+    // UI Unlock
+    isLoading = false;
+    DOM.sendBtn.disabled = false;
+    DOM.statusText.textContent = "Physics | Chemistry | Biology | Maths | Anything";
+    DOM.userInput.focus();
+  }
+}
+
+function newChat() {
+  if (confirm('Start new chat? Current chat will be cleared.')) {
+    DOM.chat.innerHTML = '';
+    conversationHistory = [conversationHistory[0]]; // Keep system prompt
+    localStorage.removeItem(STORAGE_KEY);
+    addMessage('Hi! I am ScienceGPT. Ask me anything about Science or Maths 🚀', false);
+  }
+}
+
+function clearChat() {
+  if (confirm('Clear all messages?')) {
+    DOM.chat.innerHTML = '';
+    conversationHistory = [conversationHistory[0]];
+    localStorage.removeItem(STORAGE_KEY);
+    addMessage('Chat cleared. Ask me anything! 🚀', false);
+  }
 }
 
 function exportChat() {
-    if (messages.length < 2) {
-        alert('Export karne ke liye pehle kuch chat karo');
-        return;
-    }
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF();
-    let y = 20;
-    doc.setFontSize(18);
-    doc.setFont(undefined, 'bold');
-    doc.text("ScienceGPT Pro - Chat Export", 20, y);
-    y += 10;
-    doc.setFontSize(10);
-    doc.setFont(undefined, 'normal');
-    doc.text(`Date: ${new Date().toLocaleString('en-IN')}`, 20, y);
-    y += 15;
-    messages.forEach((msg, idx) => {
-        if (y > 270) {
-            doc.addPage();
-            y = 20;
-        }
-        const role = msg.role === 'user'? 'You' : 'ScienceGPT';
-        doc.setFont(undefined, 'bold');
-        doc.text(`${role}:`, 20, y);
-        y += 7;
-        doc.setFont(undefined, 'normal');
-        let content = msg.content;
-        if (Array.isArray(content)) {
-            content = content.find(c => c.type === 'text')?.text || '[Image]';
-        }
-        const lines = doc.splitTextToSize(content, 170);
-        doc.text(lines, 20, y);
-        y += lines.length * 5 + 10;
-    });
-    const filename = `ScienceGPT_${new Date().toISOString().split('T')[0]}.pdf`;
-    doc.save(filename);
+  const text = conversationHistory
+    .filter(m => m.role !== 'system')
+    .map(m => `${m.role.toUpperCase()}: ${m.content}`)
+    .join('\n\n');
+  
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ScienceGPT-Chat-${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-window.addEventListener('beforeunload', () => {
-    if (messages.length > 1) saveToHistory();
+// ===== EVENT LISTENERS =====
+DOM.sendBtn.addEventListener('click', sendMessage);
+
+DOM.userInput.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter' &&!e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
 });
+
+DOM.userInput.addEventListener('input', () => {
+  DOM.userInput.style.height = 'auto';
+  DOM.userInput.style.height = DOM.userInput.scrollHeight + 'px';
+});
+
+if (DOM.newChatBtn) DOM.newChatBtn.addEventListener('click', newChat);
+if (DOM.clearBtn) DOM.clearBtn.addEventListener('click', clearChat);
+if (DOM.exportBtn) DOM.exportBtn.addEventListener('click', exportChat);
+if (DOM.themeToggle) DOM.themeToggle.addEventListener('change', toggleTheme);
+
+// ===== INIT =====
+initTheme();
+loadFromLocal();
+if (DOM.chat.children.length === 0) {
+  addMessage('Hi! I am ScienceGPT. Ask me anything about Science or Maths 🚀', false, false, false);
+}
