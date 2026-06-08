@@ -1,6 +1,6 @@
 // jarvis-voice.js - ScienceGPT Full Jarvis Mode
 // Version: 2.0 - All Features Included
-// Created by: Meta AI for harsh23092008-coder
+// Created by: harsh23092008
 
 (function() {
   'use strict';
